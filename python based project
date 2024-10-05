@@ -1,0 +1,220 @@
+import csv
+import bcrypt
+import re
+import requests
+import logging
+from datetime import datetime
+
+# Constants for the CSV file and log file
+CSV_FILE = 'regno.csv'
+LOG_FILE = 'browsing_history.log'
+
+# Set up logging configuration
+logging.basicConfig(filename=LOG_FILE, 
+                    level=logging.INFO, 
+                    format='%(asctime)s - %(message)s',
+                    datefmt='%Y-%m-%d %H:%M:%S')
+
+# Email validation function
+def is_valid_email(email):
+    regex = r'^\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+    return re.match(regex, email)
+
+# Password validation function
+def is_valid_password(password):
+    if len(password) < 8:
+        return False
+    if not re.search(r'[A-Z]', password):
+        return False
+    if not re.search(r'[a-z]', password):
+        return False
+    if not re.search(r'[0-9]', password):
+        return False
+    if not re.search(r'[@$!%*?&]', password):
+        return False
+    return True
+
+# Hash password using bcrypt
+def hash_password(password):
+    salt = bcrypt.gensalt()
+    hashed = bcrypt.hashpw(password.encode('utf-8'), salt)
+    return hashed
+
+# Verify hashed password
+def verify_password(stored_password, entered_password):
+    return bcrypt.checkpw(entered_password.encode('utf-8'), stored_password.encode('utf-8'))
+
+# Read user data from CSV file
+def read_users_from_csv():
+    users = []
+    with open(CSV_FILE, mode='r') as file:
+        csv_reader = csv.DictReader(file)
+        for row in csv_reader:
+            users.append(row)
+    return users
+
+# Write new user data to CSV file
+def write_user_to_csv(email, hashed_password, security_question, security_answer):
+    with open(CSV_FILE, mode='a', newline='') as file:
+        writer = csv.writer(file)
+        writer.writerow([email, hashed_password.decode('utf-8'), security_question, security_answer])
+
+# Find user by email
+def find_user_by_email(email):
+    with open(CSV_FILE, mode='r') as file:
+        csv_reader = csv.DictReader(file)
+        for row in csv_reader:
+            if row['email'].strip() == email.strip():
+                return row
+    return None
+
+# Login function
+def login():
+    email = input("Enter your email: ")
+    if not is_valid_email(email):
+        print("Invalid email format.")
+        return False
+    
+    user = find_user_by_email(email)
+    if not user:
+        print("User not found.")
+        return False
+    
+    password = input("Enter your password: ")
+    
+    if verify_password(user['hashed_password'], password):
+        print("Login successful!")
+        # After login, prompt for stock data
+        ticker_symbol = input("Enter the ticker symbol for the company (e.g., AAPL for Apple): ")
+        fetch_stock_data(ticker_symbol)
+        return True
+    else:
+        print("Incorrect password.")
+        return False
+
+# Register a new user
+def register():
+    email = input("Enter your email: ")
+    if not is_valid_email(email):
+        print("Invalid email format.")
+        return
+    
+    password = input("Enter your password: ")
+    if not is_valid_password(password):
+        print("Password does not meet the required criteria.")
+        return
+    
+    security_question = input("Enter a security question: ")
+    security_answer = input("Enter the answer to your security question: ")
+
+    hashed_password = hash_password(password)
+    write_user_to_csv(email, hashed_password, security_question, security_answer)
+    print("Registration successful!")
+
+# Forgot password
+def forgot_password():
+    email = input("Enter your registered email: ")
+    user = find_user_by_email(email)
+    
+    if not user:
+        print("Email not found.")
+        return
+    
+    security_answer = input(f"Answer this security question: {user['security_question']} ")
+    
+    if security_answer == user['security_answer']:
+        new_password = input("Enter a new password: ")
+        if is_valid_password(new_password):
+            hashed_password = hash_password(new_password)
+            user['hashed_password'] = hashed_password.decode('utf-8')
+            update_csv_with_new_password(user)
+            print("Password reset successful!")
+        else:
+            print("Password does not meet criteria.")
+    else:
+        print("Incorrect answer to security question.")
+
+# Update CSV with the new password after password reset
+def update_csv_with_new_password(updated_user):
+    users = read_users_from_csv()
+    with open(CSV_FILE, mode='w', newline='') as file:
+        writer = csv.DictWriter(file, fieldnames=['email', 'hashed_password', 'security_question', 'security_answer'])
+        writer.writeheader()
+        for user in users:
+            if user['email'] == updated_user['email']:
+                writer.writerow(updated_user)
+            else:
+                writer.writerow(user)
+
+# Fetch stock data and log search history
+def fetch_stock_data(ticker_symbol):
+    API_KEY = 'N02BM6WDPK293UMU'  # Your actual API key from Alpha Vantage
+    BASE_URL = 'https://www.alphavantage.co/query'
+
+    # API request parameters
+    params = {
+        'function': 'TIME_SERIES_INTRADAY',
+        'symbol': ticker_symbol,
+        'interval': '1min',
+        'apikey': API_KEY
+    }
+
+    try:
+        # Make a GET request to the API
+        response = requests.get(BASE_URL, params=params)
+        data = response.json()
+
+        # Log the search request
+        logging.info(f"User searched for ticker symbol: {ticker_symbol}")
+
+        # Check if there's an error in the API response
+        if 'Error Message' in data:
+            print(f"Invalid ticker symbol: {ticker_symbol}. Please try again.")
+            return None
+
+        # Extract the time series data (1min interval)
+        time_series = data.get("Time Series (1min)")
+        if time_series:
+            # Get the latest data point
+            latest_time = sorted(time_series.keys())[0]
+            stock_info = time_series[latest_time]
+
+            # Extract stock information
+            current_price = stock_info['4. close']
+            open_price = stock_info['1. open']
+            high_price = stock_info['2. high']
+            low_price = stock_info['3. low']
+            volume = stock_info['5. volume']
+
+            # Display the stock data
+            print(f"\nStock Data for {ticker_symbol.upper()}:")
+            print(f"Current Price: {current_price}")
+            print(f"Open Price: {open_price}")
+            print(f"High Price: {high_price}")
+            print(f"Low Price: {low_price}")
+            print(f"Volume: {volume}")
+        else:
+            print(f"No stock data available for {ticker_symbol}. Please try again later.")
+    
+    except requests.exceptions.RequestException as e:
+        print(f"Error fetching stock data: {e}")
+        print("Please check your internet connection and try again.")
+
+# Main program
+def main():
+    print("1. Login")
+    print("2. Register")
+    print("3. Forgot Password")
+    choice = input("Choose an option: ")
+    
+    if choice == "1":
+        login()
+    elif choice == "2":
+        register()
+    elif choice == "3":
+        forgot_password()
+    else:
+        print("Invalid option.")
+
+if __name__ == "__main__":
+    main()
